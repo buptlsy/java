@@ -295,6 +295,10 @@ public class ThreadLocal<T> {
      * used, stale entries are guaranteed to be removed only when
      * the table starts running out of space.
      */
+    /**
+     * ThreadLocalMap是为了维护thread local的值而自定义的hashmap。为了处理大的并且长期存活的用法，hash table
+     * entry对key用了弱引用。然而因为引用队列没有被使用，摈弃的entry仅仅当table不再使用时才被回收。
+     */
     static class ThreadLocalMap {
 
         /**
@@ -304,6 +308,10 @@ public class ThreadLocal<T> {
          * == null) mean that the key is no longer referenced, so the
          * entry can be expunged from table.  Such entries are referred to
          * as "stale entries" in the code that follows.
+         */
+        /*
+         * entry继承了弱引用，用它来引用key。当key为null时，意味着这个key不再被引用，因此这个entry可以从table中抹去。
+         * 这样的entry是叫做 "stable entries".
          */
         static class Entry extends WeakReference<ThreadLocal<?>> {
             /** The value associated with this ThreadLocal. */
@@ -362,6 +370,10 @@ public class ThreadLocal<T> {
          * ThreadLocalMaps are constructed lazily, so we only create
          * one when we have at least one entry to put in it.
          */
+        /*
+         * 用k，v初始化一个map。ThreadLocalMap是被懒构造，
+         * 只有当我们把一项(k,v)放进map时，才构造它。
+         */
         ThreadLocalMap(ThreadLocal<?> firstKey, Object firstValue) {
             table = new Entry[INITIAL_CAPACITY];
             int i = firstKey.threadLocalHashCode & (INITIAL_CAPACITY - 1);
@@ -410,6 +422,11 @@ public class ThreadLocal<T> {
          * @param  key the thread local object
          * @return the entry associated with key, or null if no such
          */
+        /*
+         * 通过key，取出相应的entry。
+         * 如果直接命中的话，返回e；
+         * 否则调用 getEntryAfterMiss(key, i, e).
+         */
         private Entry getEntry(ThreadLocal<?> key) {
             int i = key.threadLocalHashCode & (table.length - 1);
             Entry e = table[i];
@@ -434,10 +451,13 @@ public class ThreadLocal<T> {
 
             while (e != null) {
                 ThreadLocal<?> k = e.get();
+                //如果k命中了，则返回e
                 if (k == key)
                     return e;
+                //如果k为null，则需要调用expungeStableEntry
                 if (k == null)
                     expungeStaleEntry(i);
+                //否则的话，向下找
                 else
                     i = nextIndex(i, len);
                 e = tab[i];
@@ -471,7 +491,7 @@ public class ThreadLocal<T> {
                     e.value = value;
                     return;
                 }
-
+                //k为null时，则调用replaceStableEntry(key, value, i)
                 if (k == null) {
                     replaceStaleEntry(key, value, i);
                     return;
@@ -480,6 +500,8 @@ public class ThreadLocal<T> {
 
             tab[i] = new Entry(key, value);
             int sz = ++size;
+            //调用cleanSomeSlots
+            //当达到阙值时，则需要进行rehash
             if (!cleanSomeSlots(i, sz) && sz >= threshold)
                 rehash();
         }
@@ -527,6 +549,7 @@ public class ThreadLocal<T> {
             // We clean out whole runs at a time to avoid continual
             // incremental rehashing due to garbage collector freeing
             // up refs in bunches (i.e., whenever the collector runs).
+            //从当前索引向前检测stable entry。
             int slotToExpunge = staleSlot;
             for (int i = prevIndex(staleSlot, len);
                  (e = tab[i]) != null;
@@ -536,6 +559,7 @@ public class ThreadLocal<T> {
 
             // Find either the key or trailing null slot of run, whichever
             // occurs first
+            // 从当前索引向后检测 给定的key 或者 stable entry 
             for (int i = nextIndex(staleSlot, len);
                  (e = tab[i]) != null;
                  i = nextIndex(i, len)) {
@@ -546,13 +570,15 @@ public class ThreadLocal<T> {
                 // The newly stale slot, or any other stale slot
                 // encountered above it, can then be sent to expungeStaleEntry
                 // to remove or rehash all of the other entries in run.
+                // 如果找到了key，则需要交换entry来维护hash table的顺序。
                 if (k == key) {
                     e.value = value;
 
                     tab[i] = tab[staleSlot];
                     tab[staleSlot] = e;
 
-                    // Start expunge at preceding stale entry if it exists
+                    // Start expunge at preceding stale entry if it exist
+                    // 清除stable entry
                     if (slotToExpunge == staleSlot)
                         slotToExpunge = i;
                     cleanSomeSlots(expungeStaleEntry(slotToExpunge), len);
@@ -586,27 +612,37 @@ public class ThreadLocal<T> {
          * (all between staleSlot and this slot will have been checked
          * for expunging).
          */
+
+        /*
+         * 通过在 staleSlot 和 下一个null slot 之间对任何存在冲突的项进行rehash，
+         * 来摒弃 stable entry。在此过程中，也摒弃遇到的任何其他的stable entry。
+         */
         private int expungeStaleEntry(int staleSlot) {
             Entry[] tab = table;
             int len = tab.length;
 
             // expunge entry at staleSlot
+            // 摒弃在staleSlot索引处的 entry。将table[staleSlot]置为null,size--。
             tab[staleSlot].value = null;
             tab[staleSlot] = null;
             size--;
 
             // Rehash until we encounter null
+            // rehash直到遇到null
             Entry e;
             int i;
             for (i = nextIndex(staleSlot, len);
                  (e = tab[i]) != null;
                  i = nextIndex(i, len)) {
                 ThreadLocal<?> k = e.get();
+                //如果k为null，则直接回收
                 if (k == null) {
                     e.value = null;
                     tab[i] = null;
                     size--;
                 } else {
+                // 否则的话，先将当前位置的key放到离第一次冲突尽可能进的位置(即第一个离hash值最近的 stable entry).
+                // 将当前位置置为 stable entry
                     int h = k.threadLocalHashCode & (len - 1);
                     if (h != i) {
                         tab[i] = null;
